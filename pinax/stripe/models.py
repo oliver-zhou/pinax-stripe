@@ -140,7 +140,7 @@ class Customer(StripeObject):
 
 class Card(StripeObject):
 
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, related_name="cards", on_delete=models.CASCADE)
     name = models.TextField(blank=True)
     address_line_1 = models.TextField(blank=True)
     address_line_1_check = models.CharField(max_length=15)
