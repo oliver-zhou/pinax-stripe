@@ -89,8 +89,10 @@ class PaymentMethodView(StripeView, generics.RetrieveUpdateDestroyAPIView, Custo
 
     def post(self, request, *args, **kwargs):
         try:
-            self.create_card(request.POST.get("stripeToken"))
-            return redirect("pinax_payment")
+            self.create_card(request.data.get("stripeToken"))
+            return Response(
+                            status=status.HTTP_201_CREATED,
+                            )
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -102,7 +104,9 @@ class PaymentMethodView(StripeView, generics.RetrieveUpdateDestroyAPIView, Custo
         self.object = self.get_object()
         try:
             self.delete_card(self.object.stripe_id)
-            return redirect("pinax_payment")
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -116,7 +120,9 @@ class PaymentMethodView(StripeView, generics.RetrieveUpdateDestroyAPIView, Custo
         TODO : Not actually validated that we're checking validity properly right now'''
         try:
             self.update_card(form.cleaned_data["expMonth"], form.cleaned_data["expYear"])
-            return redirect("pinax_payment")
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )        
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -152,8 +158,12 @@ class PaymentMethodCreateView(StripeView, generics.CreateAPIView, CustomerMixin,
 
     def post(self, request, *args, **kwargs):
         try:
-            self.create_card(request.POST.get("stripeToken"))
-            return redirect("pinax_stripe_payment_method_list")
+            print("Request.data: {}".format(request.data))
+            self.create_card(request.data.get("stripeToken"))
+            return Response(
+                            {'status': 'Payment Method Added'},
+                            status=status.HTTP_201_CREATED,
+                            )
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -171,7 +181,10 @@ class PaymentMethodDeleteView(StripeView, generics.DestroyAPIView, CustomerMixin
         self.object = self.get_object()
         try:
             self.delete_card(self.object.stripe_id)
-            return redirect("pinax_stripe_payment_method_list")
+            return Response(
+                            {'status': 'Payment Method Deleted'},
+                            status=status.HTTP_200_OK,
+                            )
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -230,12 +243,16 @@ class SubscriptionCreateView(StripeView, generics.CreateAPIView, PaymentsContext
     def post(self, request, *args, **kwargs):
         customer = self.get_customer()
         # try:request.POST.get("stripeToken")
-        self.subscribe(customer, plan=self.request.data.get("plan"), token=self.request.POST.get("stripeToken"))
-        print("Subscription looks good for Customer {} for Plan {} for Token {}".format(self.request.POST.get("stripeToken"),
+        self.subscribe(customer, plan=self.request.data.get("plan"), token=self.request.data.get("stripeToken"))
+        print("Subscription looks good for Customer {} for Plan {} for Token {}".format(
+                                                                                        customer,
                                                                                         self.request.data.get("plan"),
-                                                                                        self.request.POST.get("stripeToken"),
-                                                                                        ))
-        return redirect("pinax_stripe_subscription_list")
+                                                                                        self.request.data.get("stripeToken"),
+                                                                                        )
+        )
+        return Response(
+                        status=status.HTTP_201_CREATED,
+                        )
         # except stripe.StripeError as e:
         #     return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -254,7 +271,9 @@ class SubscriptionDeleteView(StripeView, generics.DestroyAPIView, PaymentsContex
         self.object = self.get_object()
         try:
             self.cancel()
-            return redirect("pinax_stripe_subscription_list")
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
         except stripe.StripeError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -284,7 +303,9 @@ class SubscriptionUpdateView(StripeView, generics.UpdateAPIView, PaymentsContext
         try:
             plan=self.request.data.get("plan")
             self.update_subscription(plan)
-            return redirect("pinax_stripe_subscription_list")
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )        
         except stripe.StripeError as e:
             return Response(errors=smart_str(e))
 
