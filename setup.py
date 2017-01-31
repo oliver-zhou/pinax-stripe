@@ -88,7 +88,7 @@ setup(
         "django>=1.7",
         "pytz",
         "six",
-        "djangorestframework>=3.1.1",
+        "djangorestframework>=3.4.6",
     ],
     test_suite="runtests.runtests",
     tests_require=[
