@@ -244,13 +244,13 @@ class SubscriptionCreateView(StripeView, generics.CreateAPIView, PaymentsContext
         customer = self.get_customer()
         # try:request.POST.get("stripeToken")
         self.subscribe(customer, plan=self.request.data.get("plan"), token=self.request.data.get("stripeToken"))
-        print("Subscription looks good for Customer {} for Plan {} for Token {}".format(
+        message = "POST/CREATE Subscription for Customer {} for Plan {} for Token {}".format(
                                                                                         customer,
                                                                                         self.request.data.get("plan"),
                                                                                         self.request.data.get("stripeToken"),
                                                                                         )
-             )
         return Response(
+                        data=message,
                         status=status.HTTP_201_CREATED,
                         )
         # except stripe.StripeError as e:
@@ -269,9 +269,16 @@ class SubscriptionDeleteView(StripeView, generics.DestroyAPIView, PaymentsContex
 
     def delete(self, request, *args, **kwargs):
         self.object = self.get_object()
+        customer = self.get_customer()
         try:
             self.cancel()
+            message = "DELETE Subscription for Customer {} for Plan {} for Token {}".format(
+                                                                                        customer,
+                                                                                        self.request.data.get("plan"),
+                                                                                        self.request.data.get("stripeToken"),
+                                                                                        )
             return Response(
+                            data=message,
                             status=status.HTTP_200_OK,
                             )
         except stripe.StripeError as e:
@@ -300,10 +307,17 @@ class SubscriptionUpdateView(StripeView, generics.UpdateAPIView, PaymentsContext
         return initial
 
     def data_valid(self, plan):
+        customer = self.get_customer()
         try:
+            message = "PATCH/UPDATE Subscription for Customer {} for Plan {} for Token {}".format(
+                                                                                        customer,
+                                                                                        self.request.data.get("plan"),
+                                                                                        self.request.data.get("stripeToken"),
+                                                                                        )
             plan=self.request.data.get("plan")
             self.update_subscription(plan)
             return Response(
+                            data=message,
                             status=status.HTTP_200_OK,
                             )
         except stripe.StripeError as e:
@@ -359,7 +373,7 @@ class Webhook(StripeView):
 class CustomerViewSet(viewsets.ModelViewSet):
     """ See the current customer/user payment details """
 
-    serializer_class = CustomerSerializer()
+    serializer_class = CustomerSerializer
     queryset = Customer.objects.all()
 
 
