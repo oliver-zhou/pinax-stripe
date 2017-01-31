@@ -67,6 +67,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
 
 class CustomerSerializer(serializers.ModelSerializer):
+    subscriptions = SubscriptionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Customer
