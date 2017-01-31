@@ -19,11 +19,14 @@ from .models import (
                      Card,
                      Subscription,
                      Customer,
+                     Plan,
                      )
 from .serializers import (
                           InvoiceSerializer,
                           CardSerializer,
                           SubscriptionSerializer,
+                          CustomerSerializer,
+                          PlanSerializer,
                           )
 
 from rest_framework.decorators import detail_route, list_route
@@ -38,7 +41,6 @@ from django.conf import settings
 from django.utils.encoding import smart_str
 
 from django.db.models import Q
-
 
 
 class StripeView(APIView):
@@ -122,7 +124,7 @@ class PaymentMethodView(StripeView, generics.RetrieveUpdateDestroyAPIView, Custo
             self.update_card(form.cleaned_data["expMonth"], form.cleaned_data["expYear"])
             return Response(
                             status=status.HTTP_200_OK,
-                            )        
+                            )
         except stripe.CardError as e:
             return Response(self.get_context_data(errors=smart_str(e)))
 
@@ -249,7 +251,7 @@ class SubscriptionCreateView(StripeView, generics.CreateAPIView, PaymentsContext
                                                                                         self.request.data.get("plan"),
                                                                                         self.request.data.get("stripeToken"),
                                                                                         )
-        )
+             )
         return Response(
                         status=status.HTTP_201_CREATED,
                         )
@@ -305,7 +307,7 @@ class SubscriptionUpdateView(StripeView, generics.UpdateAPIView, PaymentsContext
             self.update_subscription(plan)
             return Response(
                             status=status.HTTP_200_OK,
-                            )        
+                            )
         except stripe.StripeError as e:
             return Response(errors=smart_str(e))
 
@@ -354,3 +356,17 @@ class Webhook(StripeView):
                 message=data
             )
         return HttpResponse()
+
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    """ See the current customer/user payment details """
+
+    serializer_class = CustomerSerializer()
+    queryset = Customer.objects.all()
+
+
+class PlanViewSet(viewsets.ModelViewSet):
+    '''Plan Viewset'''
+    serializer_class = PlanSerializer
+    queryset = Plan.objects.all()
+
