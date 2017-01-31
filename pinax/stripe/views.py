@@ -1,38 +1,46 @@
-from django.shortcuts import get_object_or_404
+import json
+
+from django.http import HttpResponse
+from django.shortcuts import redirect, get_object_or_404
+from django.utils.decorators import method_decorator
+from django.utils.encoding import smart_str
+from django.views.generic import TemplateView, DetailView, View, FormView, ListView
+from django.views.generic.edit import FormMixin
+from django.views.decorators.csrf import csrf_exempt
+
+import stripe
+
+from .actions import events, exceptions, customers, subscriptions, sources
+from .conf import settings
+from .forms import PlanForm, PaymentMethodForm
+from .mixins import LoginRequiredMixin, CustomerMixin, PaymentsContextMixin
+from .models import (
+                     Invoice,
+                     Card,
+                     Subscription,
+                     Customer,
+                     Plan,
+                     )
+from .serializers import (
+                          InvoiceSerializer,
+                          CardSerializer,
+                          SubscriptionSerializer,
+                          CustomerSerializer,
+                          PlanSerializer,
+                          )
+
+from rest_framework.decorators import detail_route, list_route
+from rest_framework.response import Response
+from rest_framework.reverse import reverse
+from rest_framework import viewsets, status, generics
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
 from django.utils.encoding import smart_str
 
-from rest_framework import status, generics
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-
-from .. import settings as app_settings
-
-from .serializers import (
-    CurrentSubscriptionSerializer,
-    CurrentCustomerSerializer,
-    SubscriptionSerializer,
-    CardSerializer,
-    CancelSerializer,
-    ChargeSerializer,
-    InvoiceSerializer,
-    EventSerializer,
-    WebhookSerializer,
-    EventProcessingExceptionSerializer
-)
-
-from ..models import (
-    Event,
-    Customer,
-    CurrentSubscription,
-    EventProcessingException
-)
-
-import stripe
-
-stripe.api_key = app_settings.get_api_key()
+from django.db.models import Q
 
 
 class StripeView(APIView):
@@ -41,8 +49,8 @@ class StripeView(APIView):
 
     def get_current_subscription(self):
         try:
-            return self.request.user.customer.current_subscription
-        except CurrentSubscription.DoesNotExist:
+            return self.request.user.customer.subscription
+        except Subscription.DoesNotExist:
             return None
 
     def get_customer(self):
@@ -52,178 +60,311 @@ class StripeView(APIView):
             return Customer.create(self.request.user)
 
 
-class CurrentCustomerDetailView(StripeView, generics.RetrieveAPIView):
-    """ See the current customer/user payment details """
+class InvoiceListView(StripeView, generics.ListAPIView, CustomerMixin):
+    '''DRF APIView List Invoices'''
+    queryset = Invoice.objects.all()
+    serializer_class = InvoiceSerializer
 
-    serializer_class = CurrentCustomerSerializer
+    def get_queryset(self):
+        customer = self.get_customer()
+        return customer.invoices.all()
 
-    def get_object(self):
-        return self.get_customer()
+
+class PaymentMethodView(StripeView, generics.RetrieveUpdateDestroyAPIView, CustomerMixin):
+    '''Combine PaymentMethod List, Create, Delete, and Update Views'''
+    queryset = Card.objects.all()
+    serializer_class = CardSerializer
+
+    # ListView
+    def get_queryset(self):
+        customer = self.get_customer()
+        return customer.cards.all()
+
+    # CreateView
+    def create_card(self, stripe_token):
+        # Messed up, but so is the default.
+        customer = self.get_customer()
+        print("Stripe Token {}".format(stripe_token))
+        sources.create_card(customer, token=stripe_token)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            self.create_card(request.data.get("stripeToken"))
+            return Response(
+                            status=status.HTTP_201_CREATED,
+                            )
+        except stripe.CardError as e:
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+    # DeleteView
+    def delete_card(self, stripe_id):
+        sources.delete_card(self.customer, stripe_id)
+
+    def delete(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        try:
+            self.delete_card(self.object.stripe_id)
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
+        except stripe.CardError as e:
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+    # UpdateView
+    def update_card(self, exp_month, exp_year):
+        sources.update_card(self.customer, self.object.stripe_id, exp_month=exp_month, exp_year=exp_year)
+
+    def form_valid(self, form):
+        '''Check Valditiy of Update
+
+        TODO : Not actually validated that we're checking validity properly right now'''
+        try:
+            self.update_card(form.cleaned_data["expMonth"], form.cleaned_data["expYear"])
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
+        except stripe.CardError as e:
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+    def patch(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        form = self.get_form(form_class=self.form_class)
+        if form.is_valid():
+            return self.form_valid(form)
+        else:
+            return self.form_invalid(form)
+
+
+class PaymentMethodListView(StripeView, generics.ListAPIView, CustomerMixin):
+    '''DRF APIView List Invoices'''
+    queryset = Card.objects.all()
+    serializer_class = CardSerializer
+
+    def get_queryset(self):
+        customer = self.get_customer()
+        return customer.cards.all()
+
+
+class PaymentMethodCreateView(StripeView, generics.CreateAPIView, CustomerMixin, PaymentsContextMixin):
+    '''DRF APIView Create Payment Method (Card)'''
+    queryset = Card.objects.all()
+    serializer_class = CardSerializer
+
+    def create_card(self, stripe_token):
+        # Messed up, but so is the default.
+        customer = self.get_customer()
+        print("Stripe Token {}".format(stripe_token))
+        sources.create_card(customer, token=stripe_token)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            print("Request.data: {}".format(request.data))
+            self.create_card(request.data.get("stripeToken"))
+            return Response(
+                            {'status': 'Payment Method Added'},
+                            status=status.HTTP_201_CREATED,
+                            )
+        except stripe.CardError as e:
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+
+class PaymentMethodDeleteView(StripeView, generics.DestroyAPIView, CustomerMixin):
+    '''DRF APIView Delete Payment Method (Card)'''
+    queryset = Card.objects.all()
+    serializer_class = CardSerializer
+
+    def delete_card(self, stripe_id):
+        customer = self.get_customer()
+        sources.delete_card(customer, stripe_id)
+
+    def delete(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        try:
+            self.delete_card(self.object.stripe_id)
+            return Response(
+                            {'status': 'Payment Method Deleted'},
+                            status=status.HTTP_200_OK,
+                            )
+        except stripe.CardError as e:
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+
+class PaymentMethodUpdateView(StripeView, generics.UpdateAPIView, CustomerMixin, PaymentsContextMixin):
+    '''DRF APIView Update Payment Method (Card)
+
+    TODO : Add more Validation on Fields like the Django App Version
+    '''
+    queryset = Card.objects.all()
+    serializer_class = CardSerializer
+
+    def update_card(self, exp_month, exp_year):
+        customer = self.get_customer()
+        sources.update_card(customer, self.object.stripe_id, exp_month=exp_month, exp_year=exp_year)
+        return Response({'status': 'Card Updated'})
+
+    def patch(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        print("Payment Update Patch {}, request {}".format(self.object, repr(request.data)))
+        return self.update_card(request.data.get('expMonth'), request.data.get('expYear'))
+
+    def put(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        return self.update_card(request.data.get('expMonth'), request.data.get('expYear'))
 
 
 class SubscriptionView(StripeView):
     """ See, change/set the current customer/user subscription plan """
     serializer_class = SubscriptionSerializer
-
-    def get(self, request, *args, **kwargs):
-        current_subscription = self.get_current_subscription()
-        serializer = CurrentSubscriptionSerializer(current_subscription)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def post(self, request, *args, **kwargs):
-        try:
-            serializer = self.serializer_class(data=request.data)
-
-            if serializer.is_valid():
-                validated_data = serializer.validated_data
-                stripe_plan = validated_data.get('stripe_plan', None)
-                customer = self.get_customer()
-                subscription = customer.subscribe(stripe_plan)
-
-                return Response(subscription, status=status.HTTP_201_CREATED)
-            else:
-                return Response(serializer.errors)
-        except stripe.StripeError as e:
-            from django.utils.encoding import smart_str
-
-            error_data = {u'error': smart_str(e) or u'Unknown error'}
-            return Response(error_data, status=status.HTTP_400_BAD_REQUEST)
+    queryset = Subscription.objects.all()
 
 
-class ChangeCardView(StripeView):
-    """ Add or update customer card details """
-    serializer_class = CardSerializer
+class SubscriptionViewSet(StripeView, viewsets.ModelViewSet, CustomerMixin):
+    ''' Combine Subscription ListView, CreateView, DeleteView, UpdateView '''
+    queryset = Subscription.objects.all()
+    serializer_class = SubscriptionSerializer
+
+
+class SubscriptionListView(StripeView, generics.ListAPIView, CustomerMixin):
+    queryset = Subscription.objects.all()
+    serializer_class = SubscriptionSerializer
+
+
+class SubscriptionCreateView(StripeView, generics.CreateAPIView, PaymentsContextMixin, CustomerMixin):
+    queryset = Subscription.objects.all()
+    serializer_class = SubscriptionSerializer
+
+    @property
+    def tax_percent(self):
+        return settings.PINAX_STRIPE_SUBSCRIPTION_TAX_PERCENT
+
+    def subscribe(self, customer, plan, token):
+        subscriptions.create(customer, plan, token=token, tax_percent=self.tax_percent)
 
     def post(self, request, *args, **kwargs):
-        try:
-            serializer = self.serializer_class(data=request.data)
-
-            if serializer.is_valid():
-                validated_data = serializer.validated_data
-
-                customer = self.get_customer()
-                card_token_response = customer.create_card_token(validated_data)
-                token = card_token_response[0].get('id', None)
-                customer.update_card(token)
-                send_invoice = customer.card_fingerprint == ""
-
-                if send_invoice:
-                    customer.send_invoice()
-                    customer.retry_unpaid_invoices()
-
-                return Response(validated_data, status=status.HTTP_201_CREATED)
-            else:
-                return Response(serializer.errors)
-
-        except stripe.CardError as e:
-            error_data = {u'error': smart_str(e) or u'Unknown error'}
-            return Response(error_data, status=status.HTTP_400_BAD_REQUEST)
-
-
-class CancelView(StripeView):
-    """ Cancel customer subscription """
-    serializer_class = CancelSerializer
-
-    def post(self, request, *args, **kwargs):
-        try:
-            serializer = self.serializer_class(data=request.data)
-            if serializer.is_valid():
-                customer = self.get_customer()
-                customer.cancel()
-                return Response({'success': True}, status=status.HTTP_202_ACCEPTED)
-            else:
-                return Response(serializer.errors)
-        except stripe.StripeError as e:
-            error_data = {u'error': smart_str(e) or u'Unknown error'}
-            return Response(error_data, status=status.HTTP_400_BAD_REQUEST)
-
-
-class PlanListView(StripeView):
-    """ List all current plans """
-
-    def get(self, request, *args, **kwargs):
-        return Response(settings.PAYMENTS_PLANS, status=status.HTTP_200_OK)
-
-
-class ChargeListView(StripeView, generics.ListAPIView):
-    """ List customer charges """
-    serializer_class = ChargeSerializer
-
-    def get_queryset(self):
         customer = self.get_customer()
-        charges = customer.charges.all()
-        return charges
-
-
-class InvoiceListView(StripeView, generics.ListAPIView):
-    """ List customer invoices """
-    serializer_class = InvoiceSerializer
-
-    def get_queryset(self):
-        customer = self.get_customer()
-        invoices = customer.invoices.all()
-        return invoices
-
-
-class EventListView(StripeView, generics.ListAPIView):
-    """ List customer events """
-    serializer_class = EventSerializer
-
-    def get_queryset(self):
-        customer = self.get_customer()
-        events = customer.event_set.all()
-        return events
-
-
-class WebhookView(StripeView):
-    serializer_class = WebhookSerializer
-
-    def validate_webhook(self, webhook_data):
-        webhook_id = webhook_data.get('id', None)
-        webhook_type = webhook_data.get('type', None)
-        webhook_livemode = webhook_data.get('livemode', None)
-        is_valid = False
-
-        if webhook_id and webhook_type and webhook_livemode:
-            is_valid = True
-        return is_valid, webhook_id, webhook_type, webhook_livemode
-
-    def post(self, request, *args, **kwargs):
-        try:
-            serializer = self.serializer_class(data=request.data)
-
-            if serializer.is_valid():
-                validated_data = serializer.validated_data
-                webhook_data = validated_data.get('data', None)
-
-                is_webhook_valid, webhook_id, webhook_type, webhook_livemode = self.validate_webhook(webhook_data)
-
-                if is_webhook_valid:
-                    if Event.objects.filter(stripe_id=webhook_id).exists():
-                        obj = EventProcessingException.objects.create(
-                            data=validated_data,
-                            message="Duplicate event record",
-                            traceback=""
+        # try:request.POST.get("stripeToken")
+        self.subscribe(customer, plan=self.request.data.get("plan"), token=self.request.data.get("stripeToken"))
+        print("Subscription looks good for Customer {} for Plan {} for Token {}".format(
+                                                                                        customer,
+                                                                                        self.request.data.get("plan"),
+                                                                                        self.request.data.get("stripeToken"),
+                                                                                        )
+             )
+        return Response(
+                        status=status.HTTP_201_CREATED,
                         )
+        # except stripe.StripeError as e:
+        #     return Response(self.get_context_data(errors=smart_str(e)))
 
-                        event_processing_exception_serializer = EventProcessingExceptionSerializer(obj)
-                        return Response(event_processing_exception_serializer.data, status=status.HTTP_200_OK)
-                    else:
-                        event = Event.objects.create(
-                            stripe_id=webhook_id,
-                            kind=webhook_type,
-                            livemode=webhook_livemode,
-                            webhook_message=validated_data
-                        )
-                        event.validate()
-                        event.process()
-                        event_serializer = EventSerializer(event)
-                        return Response(event_serializer.data, status=status.HTTP_200_OK)
-                else:
-                    error_data = {u'error': u'Webhook must contain id, type and livemode.'}
-                    return Response(error_data, status=status.HTTP_400_BAD_REQUEST)
-            else:
-                return Response(serializer.errors)
+
+class SubscriptionDeleteView(StripeView, generics.DestroyAPIView, PaymentsContextMixin, CustomerMixin):
+    '''Sets specific Subscription to end.
+
+    Doesn't immediately delete, it sets cancel_at_period_end to True'''
+    queryset = Subscription.objects.all()
+    serializer_class = SubscriptionSerializer
+
+    def cancel(self):
+        subscriptions.cancel(self.object)
+
+    def delete(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        try:
+            self.cancel()
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
         except stripe.StripeError as e:
-            error_data = {u'error': smart_str(e) or u'Unknown error'}
-            return Response(error_data, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self.get_context_data(errors=smart_str(e)))
+
+
+class SubscriptionUpdateView(StripeView, generics.UpdateAPIView, PaymentsContextMixin, CustomerMixin):
+    '''Not validated fully yet'''
+    queryset = Subscription.objects.all()
+    serializer_class = SubscriptionSerializer
+
+    @property
+    def current_plan(self):
+        if not hasattr(self, "_current_plan"):
+            self._current_plan = self.object.plan
+        return self._current_plan
+
+    def update_subscription(self, plan_id):
+        subscriptions.update(self.object, plan_id)
+
+    def get_initial(self):
+        initial = super(SubscriptionUpdateView, self).get_initial()
+        initial.update({
+            "plan": self.current_plan
+        })
+        return initial
+
+    def data_valid(self, plan):
+        try:
+            plan=self.request.data.get("plan")
+            self.update_subscription(plan)
+            return Response(
+                            status=status.HTTP_200_OK,
+                            )
+        except stripe.StripeError as e:
+            return Response(errors=smart_str(e))
+
+    def patch(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        try:
+            plan=self.request.data.get("plan")
+            return self.data_valid(plan)
+        except:
+            return Response(
+                            self.serializer_class.errors,
+                            status=status.HTTP_400_BAD_REQUEST,
+                            )
+
+    def put(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        try:
+            plan=self.request.data.get("plan")
+            return self.data_valid(plan)
+        except:
+            return Response(
+                            self.serializer_class.errors,
+                            status=status.HTTP_400_BAD_REQUEST,
+                            )
+
+
+class Webhook(StripeView):
+
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super(Webhook, self).dispatch(*args, **kwargs)
+
+    def extract_json(self):
+        data = json.loads(smart_str(self.request.body))
+        return data
+
+    def post(self, request, *args, **kwargs):
+        data = self.extract_json()
+        if events.dupe_event_exists(data["id"]):
+            exceptions.log_exception(data, "Duplicate event record")
+        else:
+            events.add_event(
+                stripe_id=data["id"],
+                kind=data["type"],
+                livemode=data["livemode"],
+                message=data
+            )
+        return HttpResponse()
+
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    """ See the current customer/user payment details """
+
+    serializer_class = CustomerSerializer()
+    queryset = Customer.objects.all()
+
+
+class PlanViewSet(viewsets.ModelViewSet):
+    '''Plan Viewset'''
+    serializer_class = PlanSerializer
+    queryset = Plan.objects.all()
+
