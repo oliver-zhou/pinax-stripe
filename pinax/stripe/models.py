@@ -184,7 +184,7 @@ class BitcoinReceiver(StripeObject):
 
 class Subscription(StripeObject):
 
-    customer = models.ForeignKey(
+    customer = models.OneToOneField(
                                  Customer,
                                  related_name="subscriptions",
                                  on_delete=models.CASCADE,

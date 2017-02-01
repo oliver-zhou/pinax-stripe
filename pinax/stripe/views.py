@@ -49,7 +49,7 @@ class StripeView(APIView):
 
     def get_current_subscription(self):
         try:
-            return self.request.user.customer.subscription
+            return self.request.user.customer.subscriptions
         except Subscription.DoesNotExist:
             return None
 
@@ -220,13 +220,66 @@ class SubscriptionView(StripeView):
 
 class SubscriptionViewSet(StripeView, viewsets.ModelViewSet, CustomerMixin):
     ''' Combine Subscription ListView, CreateView, DeleteView, UpdateView '''
-    queryset = Subscription.objects.all()
     serializer_class = SubscriptionSerializer
+    queryset = Subscription.objects.all()
+    @property
+    def current_plan(self):
+        if not hasattr(self, "_current_plan"):
+            self._current_plan = self.object.plan
+        return self._current_plan
 
+    def update_subscription(self, plan_id, **kwargs):
+        print("Plan ID {}".format(plan_id))
+        subscriptions.update(self.object, plan_id)
+
+    def get_initial(self):
+        initial = super(SubscriptionUpdateView, self).get_initial()
+        initial.update({
+            "plan": self.current_plan
+        })
+        return initial
+
+    def data_valid(self, plan, **kwargs):
+        '''Data Validty Check of Plan Name'''
+        customer = self.get_customer()
+        print("Customer {}".format(customer))
+        try:
+            message = "PATCH/UPDATE Subscription for Customer {} for Plan {} for Token {}".format(
+                                                                                        customer,
+                                                                                        self.request.data.get("plan"),
+                                                                                        self.request.data.get("stripeToken"),
+                                                                                        )
+            plan=self.request.data.get("plan")
+            print("Plan {}".format(plan))
+            self.update_subscription(plan, **kwargs)
+            return Response(
+                            data=message,
+                            status=status.HTTP_200_OK,
+                            )
+        except stripe.StripeError as e:
+            return Response(errors=smart_str(e))
+        except Exception as e:
+            return Response(errors=smart_str(e))
+
+    def update(self, request, pk=None, **kwargs):
+        self.object = self.get_object()
+        print("Request.data {}".format(request.data))
+        try:
+            plan=self.request.data.get("plan")
+            print("Plan {}".format(plan))
+            return self.data_valid(plan, **kwargs)
+        except:
+            return Response(
+                            self.serializer_class.errors,
+                            status=status.HTTP_400_BAD_REQUEST,
+                            )
 
 class SubscriptionListView(StripeView, generics.ListAPIView, CustomerMixin):
-    queryset = Subscription.objects.all()
     serializer_class = SubscriptionSerializer
+
+    def get_queryset(self):
+        return self.get_current_subscription()
+
 
 
 class SubscriptionCreateView(StripeView, generics.CreateAPIView, PaymentsContextMixin, CustomerMixin):
